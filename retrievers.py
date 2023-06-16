@@ -11,7 +11,7 @@ from llama_index import (
 )
 from llama_index.indices.document_summary import (
     DocumentSummaryIndex,
-    DocumentSummaryIndexRetriever
+    DocumentSummaryIndexRetriever,
 )
 from llama_index.indices.loading import load_index_from_storage
 from langchain.retrievers.weaviate_hybrid_search import WeaviateHybridSearchRetriever
@@ -19,13 +19,10 @@ from langchain.vectorstores import Chroma, Weaviate
 from langchain.base_language import BaseLanguageModel
 from enum import Enum
 import weaviate
+import os
 
 
 class RetrieverBuilder(ABC):
-    @staticmethod
-    def from_storage(llm, embeddings, **kwargs) -> BaseRetriever:
-        pass
-
     @staticmethod
     def from_documents(
         llm, embeddings, docs: List[Document], **kwargs
@@ -41,38 +38,46 @@ class RetrieverType(str, Enum):
 
 class ChromaRetrieverBuilder(RetrieverBuilder):
     @staticmethod
-    def from_storage(llm, embeddings, **kwargs) -> BaseRetriever:
-        return Chroma(
-            persist_directory=kwargs["persist_path"], embedding_function=embeddings
-        ).as_retriever()
-
-    @staticmethod
     def from_documents(
         llm, embeddings, docs: List[Document], **kwargs
     ) -> BaseRetriever:
-        return Chroma.from_documents(
-            docs, embeddings, persist_directory=kwargs["persist_path"]
-        ).as_retriever()
+        if (
+            not kwargs["init"]
+            and "persiste_path" in kwargs
+            and os.path.exists(kwargs["persiste_path"])
+        ):
+            return Chroma(
+                persist_directory=kwargs["persist_path"], embedding_function=embeddings
+            ).as_retriever()
+        else:
+            return Chroma.from_documents(
+                docs, embeddings, persist_directory=kwargs["persist_path"]
+            ).as_retriever()
 
 
 class WeaviateHybridSearchRetrieverBuilder(RetrieverBuilder):
     @staticmethod
-    def from_storage(llm, embeddings, **kwargs) -> BaseRetriever:
+    def from_documents(
+        llm, embeddings, docs: List[Document], **kwargs
+    ) -> BaseRetriever:
+        if kwargs["init"]:
+            Weaviate.from_documents(
+                docs,
+                embeddings,
+                by_text=False,
+                weaviate_url=kwargs["url"],
+                index_name=kwargs["index_name"],
+                text_key=kwargs["text_key"],
+            )
         client = weaviate.Client(url=kwargs["url"])
         return WeaviateHybridSearchRetriever(
             client, kwargs["index_name"], kwargs["text_key"], embeddings
         )
 
-    @staticmethod
-    def from_documents(
-        llm, embeddings, docs: List[Document], **kwargs
-    ) -> BaseRetriever:
-        raise NotImplementedError()
-
 
 class LlamaDocSummaryRetrieverBuilder(RetrieverBuilder):
     @staticmethod
-    def from_documents(
+    def _from_documents(
         llm: BaseLanguageModel, embeddings, docs: List[Document], **kwargs
     ) -> "LlamaRetriever":
         service_context = ServiceContext.from_defaults(
@@ -97,7 +102,7 @@ class LlamaDocSummaryRetrieverBuilder(RetrieverBuilder):
         return retriever
 
     @staticmethod
-    def from_storage(llm: BaseLanguageModel, embeddings, **kwargs) -> "LlamaRetriever":
+    def _from_storage(llm: BaseLanguageModel, embeddings, **kwargs) -> "LlamaRetriever":
         storage_context = StorageContext.from_defaults(
             persist_dir=kwargs["persist_path"]
         )
@@ -107,6 +112,23 @@ class LlamaDocSummaryRetrieverBuilder(RetrieverBuilder):
             doc_summary_index, service_context=service_context
         )
         return LlamaRetriever(index=doc_summary_index, retriever=doc_summary_retriever)
+
+    @staticmethod
+    def from_documents(
+        llm, embeddings, docs: List[Document], **kwargs
+    ) -> BaseRetriever:
+        if (
+            not kwargs["init"]
+            and "persist_path" in kwargs
+            and os.path.exists(kwargs["persist_path"])
+        ):
+            return LlamaDocSummaryRetrieverBuilder._from_storage(
+                llm, embeddings, **kwargs
+            )
+        else:
+            return LlamaDocSummaryRetrieverBuilder._from_documents(
+                llm, embeddings, docs, **kwargs
+            )
 
 
 RETRIEVER_TYPE_TO_CLASS = {
@@ -119,14 +141,6 @@ RETRIEVER_TYPE_TO_CLASS = {
 def initialize_retriever(
     llm, embeddings, docs: List[Document], retriever_type: str, **kwargs
 ) -> BaseRetriever:
-    if retriever_type in RETRIEVER_TYPE_TO_CLASS:
-        if kwargs["from_storage"]:
-            return RETRIEVER_TYPE_TO_CLASS[retriever_type].from_storage(
-                llm, embeddings, **kwargs
-            )
-        else:
-            return RETRIEVER_TYPE_TO_CLASS[retriever_type].from_documents(
-                llm, embeddings, docs, **kwargs
-            )
-    else:
-        raise NotImplementedError(f"Retriever {retriever_type} not implemented")
+    return RETRIEVER_TYPE_TO_CLASS[retriever_type].from_documents(
+        llm, embeddings, docs, **kwargs
+    )

@@ -15,6 +15,8 @@ from document_processors import (
 )
 from splitters import SplitterType, initialize_splitter
 from models import ModelType, EmbeddingType, initialize_model, initialize_embedding
+from enum import Enum
+import sys
 
 
 class EvalConfig(BaseModel):
@@ -41,7 +43,6 @@ class EvalInstance(BaseModel):
         arbitrary_types_allowed = True
 
 
-
 def initialize_eval(eval_conf: EvalConfig, raw_docs: List[Document]):
     llm = initialize_model(eval_conf.model_type, **eval_conf.model_args)
     embeddings = initialize_embedding(
@@ -66,7 +67,17 @@ def initialize_eval(eval_conf: EvalConfig, raw_docs: List[Document]):
     )
 
 
+class DocumentLoaderType(str, Enum):
+    READ_THE_DOCS = "read_the_docs"
+
+
+DOCUMENT_LOADER_TYPE_TO_CLASS = {
+    DocumentLoaderType.READ_THE_DOCS: ReadTheDocsLoader,
+}
+
+
 def load_docs(path: str) -> List[Document]:
+    # TODO: support other document formats
     loader = ReadTheDocsLoader(path, features="html.parser")
     return loader.load()
 
@@ -140,13 +151,15 @@ def run_eval(evals, eval_qa_pair, grade_prompt):
 
 
 if __name__ == "__main__":
+    init = True if len(sys.argv) > 1 and sys.argv[1] == "init" else False
+
     eval_confs = [
         EvalConfig(
             model_type=ModelType.CHAT_OPENAI,
             model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
             embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
             retriever_type=RetrieverType.LLAMA_DOC_SUMMARY,
-            retriever_args={"from_storage": True, "persist_path": "doc_summary_index"},
+            retriever_args={"init": init, "persist_path": "doc_summary_index"},
         ),
         EvalConfig(
             model_type=ModelType.CHAT_OPENAI,
@@ -155,7 +168,7 @@ if __name__ == "__main__":
             splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
             splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
             retriever_type=RetrieverType.CHROMA_VECTORSTORE,
-            retriever_args={"from_storage": True, "persist_path": "chroma_index"},
+            retriever_args={"init": init, "persist_path": "chroma_index"},
         ),
         EvalConfig(
             model_type=ModelType.CHAT_OPENAI,
@@ -165,7 +178,7 @@ if __name__ == "__main__":
             splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
             retriever_type=RetrieverType.WEAVIATE_HYBRID_SEARCH,
             retriever_args={
-                "from_storage": True,
+                "init": init,
                 "persist_path": "hybrid_index",
                 "url": "http://localhost:8080",
                 "index_name": "LangChain_4434c0821b20463b878724ede4b28322",
