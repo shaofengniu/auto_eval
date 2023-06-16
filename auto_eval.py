@@ -35,12 +35,15 @@ class EvalConfig(BaseModel):
 
 
 class EvalInstance(BaseModel):
-    retriever_type: RetrieverType
+    config: EvalConfig
     retriever: BaseRetriever
     document_processor: DocumentProcessor
 
     class Config:
         arbitrary_types_allowed = True
+
+    def __str__(self) -> str:
+        return f"{self.config.retriever_type}({self.config.document_processor_type})"
 
 
 def initialize_eval(eval_conf: EvalConfig, raw_docs: List[Document]):
@@ -61,6 +64,7 @@ def initialize_eval(eval_conf: EvalConfig, raw_docs: List[Document]):
     )
     print(eval_conf.dict(), len(raw_docs), len(docs))
     return EvalInstance(
+        config=eval_conf,
         retriever=retriever,
         retriever_type=eval_conf.retriever_type,
         document_processor=document_processor,
@@ -88,12 +92,10 @@ template = """
 Given the question: \n
 {query}
 Here are some documents retrieved by different retrievers in response to the question: \n
-# Retriever <retriever_name>
-## Document Content
+# <retriever_name>
 <document_content>
 
-# Retriever <retriever_name>
-## Document Content
+# <retriever_name>
 <document_content>
 
 {result}
@@ -103,11 +105,11 @@ Criteria:
   relevance: Are the retrieved documents relevant to the question?"
 
 Your response should be as follows:
-# Retriever <retriever_name>
+# <retriever_name>
 GRADE: (1 to 10, depending if the retrieved documents meet the criterion)
 (line break)
 JUSTIFICATION: (Write out in a step by step manner your reasoning about the criterion to be sure that your conclusion is correct. Use one or two sentences maximum. Keep the answer as concise as possible.)
-# Retriever <retriever_name>
+# <retriever_name>
 GRADE: ...
 JUSTIFICATION:...
 """
@@ -120,8 +122,7 @@ GRADE_DOCS_PROMPT = PromptTemplate(
 def grade_model_retrieval(examples, predictions, prompt):
     eval_chain = QAEvalChain.from_llm(
         llm=ChatOpenAI(model_name="gpt-3.5-turbo-16k", temperature=0),
-        prompt=prompt,
-        verbose=True,
+        prompt=prompt
     )
     outputs = eval_chain.evaluate(examples, predictions)
     return outputs
@@ -135,9 +136,8 @@ def run_eval(evals, eval_qa_pair, grade_prompt):
     text = ""
     for eval in evals:
         docs = eval.retriever.get_relevant_documents(eval_qa_pair["query"])
-        context = eval.document_processor.process(docs)
-        text += f"# Retriever {eval.retriever_type}\n"
-        text += "## Document Content\n"
+        context = eval.document_processor.process(docs, eval_qa_pair["query"])
+        text += f"# {str(eval)}\n"
         text += context + "\n\n"
     retrived_docs = [
         {
@@ -154,15 +154,7 @@ def run_eval(evals, eval_qa_pair, grade_prompt):
 
 if __name__ == "__main__":
     init = True if len(sys.argv) > 1 and sys.argv[1] == "init" else False
-
     eval_confs = [
-        EvalConfig(
-            model_type=ModelType.CHAT_OPENAI,
-            model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
-            embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
-            retriever_type=RetrieverType.LLAMA_DOC_SUMMARY,
-            retriever_args={"init": init, "persist_path": "doc_summary_index"},
-        ),
         EvalConfig(
             model_type=ModelType.CHAT_OPENAI,
             model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
@@ -171,6 +163,26 @@ if __name__ == "__main__":
             splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
             retriever_type=RetrieverType.CHROMA_VECTORSTORE,
             retriever_args={"init": init, "persist_path": "chroma_index"},
+            document_processor_type=DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR,
+            document_processor_args={"limit": 4000}
+        ),
+        EvalConfig(
+            model_type=ModelType.CHAT_OPENAI,
+            model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+            embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
+            splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
+            splitter_args={"chunk_size": 2000, "chunk_overlap": 100},
+            retriever_type=RetrieverType.CHROMA_VECTORSTORE,
+            retriever_args={"init": init, "persist_path": "chroma_index_with_compressor"},
+            document_processor_type=DocumentProcessorType.DOCUMENT_COMPRESSOR,
+            document_processor_args={"limit": 4000}
+        ),
+        EvalConfig(
+            model_type=ModelType.CHAT_OPENAI,
+            model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+            embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
+            retriever_type=RetrieverType.LLAMA_DOC_SUMMARY,
+            retriever_args={"init": init, "persist_path": "doc_summary_index"},
         ),
         EvalConfig(
             model_type=ModelType.CHAT_OPENAI,
@@ -185,8 +197,8 @@ if __name__ == "__main__":
                 "url": "http://localhost:8080",
                 "index_name": "LangChain_4434c0821b20463b878724ede4b28322",
                 "text_key": "text",
-            },
-        ),
+            }
+        )
     ]
     docs = load_docs(
         "python.langchain.com/en/latest/modules/indexes/retrievers/examples",
@@ -198,10 +210,9 @@ if __name__ == "__main__":
     retrieved_documents = []
     for qa_pair in qa_pairs:
         graded_retrieval, retrieved_text = run_eval(evals, qa_pair, GRADE_DOCS_PROMPT)
-        print(colored(graded_retrieval["text"], "cyan"))
+        print(colored(graded_retrieval["text"], "green"))
         retrieved_documents.append(
             {"query": qa_pair["query"], "result": retrieved_text}
         )
-        print(retrieved_text)
     with open("retrieved_documents.json", "w") as f:
         json.dump(retrieved_documents, f)

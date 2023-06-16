@@ -48,11 +48,11 @@ class ChromaRetrieverBuilder(RetrieverBuilder):
         ):
             return Chroma(
                 persist_directory=kwargs["persist_path"], embedding_function=embeddings
-            ).as_retriever()
+            ).as_retriever(**kwargs)
         else:
             return Chroma.from_documents(
                 docs, embeddings, persist_directory=kwargs["persist_path"]
-            ).as_retriever()
+            ).as_retriever(**kwargs)
 
 
 class WeaviateHybridSearchRetrieverBuilder(RetrieverBuilder):
