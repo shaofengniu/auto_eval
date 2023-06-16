@@ -76,9 +76,11 @@ DOCUMENT_LOADER_TYPE_TO_CLASS = {
 }
 
 
-def load_docs(path: str) -> List[Document]:
+def load_docs(path: str, loader_type: DocumentLoaderType, **kwargs) -> List[Document]:
     # TODO: support other document formats
-    loader = ReadTheDocsLoader(path, features="html.parser")
+    if loader_type not in DOCUMENT_LOADER_TYPE_TO_CLASS:
+        raise ValueError(f"Unknown document loader type: {loader_type}")
+    loader = DOCUMENT_LOADER_TYPE_TO_CLASS[loader_type](path, **kwargs)
     return loader.load()
 
 
@@ -187,7 +189,9 @@ if __name__ == "__main__":
         ),
     ]
     docs = load_docs(
-        "python.langchain.com/en/latest/modules/indexes/retrievers/examples"
+        "python.langchain.com/en/latest/modules/indexes/retrievers/examples",
+        DocumentLoaderType.READ_THE_DOCS,
+        features="html.parser"
     )
     evals = [initialize_eval(e, docs) for e in eval_confs]
     qa_pairs = [{"query": "how to use hybrid retriever", "answer": "hybrid search"}]
