@@ -15,6 +15,7 @@ from document_processors import (
 )
 from splitters import SplitterType, initialize_splitter
 from models import ModelType, EmbeddingType, initialize_model, initialize_embedding
+from query_transformers import QueryTransformerType, QueryTransformer, initialize_query_transformer
 from enum import Enum
 import sys
 
@@ -28,6 +29,10 @@ class EvalConfig(BaseModel):
     splitter_args: dict = {}
     retriever_type: RetrieverType
     retriever_args: dict = {}
+    query_transformer_type: QueryTransformerType = (
+        QueryTransformerType.DEFAULT_QUERY_TRANSFORMER
+    )
+    query_transformer_args: dict = {}
     document_processor_type: DocumentProcessorType = (
         DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR
     )
@@ -37,6 +42,7 @@ class EvalConfig(BaseModel):
 class EvalInstance(BaseModel):
     config: EvalConfig
     retriever: BaseRetriever
+    query_transformer: QueryTransformer
     document_processor: DocumentProcessor
 
     class Config:
@@ -59,6 +65,9 @@ def initialize_eval(eval_conf: EvalConfig, raw_docs: List[Document]):
     retriever = initialize_retriever(
         llm, embeddings, docs, eval_conf.retriever_type, **eval_conf.retriever_args
     )
+    query_transformer = initialize_query_transformer(
+        eval_conf.query_transformer_type, **eval_conf.query_transformer_args
+    )
     document_processor = initialize_document_processor(
         eval_conf.document_processor_type, **eval_conf.document_processor_args
     )
@@ -66,7 +75,7 @@ def initialize_eval(eval_conf: EvalConfig, raw_docs: List[Document]):
     return EvalInstance(
         config=eval_conf,
         retriever=retriever,
-        retriever_type=eval_conf.retriever_type,
+        query_transformer=query_transformer,
         document_processor=document_processor,
     )
 
@@ -121,8 +130,7 @@ GRADE_DOCS_PROMPT = PromptTemplate(
 
 def grade_model_retrieval(examples, predictions, prompt):
     eval_chain = QAEvalChain.from_llm(
-        llm=ChatOpenAI(model_name="gpt-3.5-turbo-16k", temperature=0),
-        prompt=prompt
+        llm=ChatOpenAI(model_name="gpt-3.5-turbo-16k", temperature=0), prompt=prompt
     )
     outputs = eval_chain.evaluate(examples, predictions)
     return outputs
@@ -135,7 +143,8 @@ def build_qa_context(docs: List[Document], context_size: int) -> str:
 def run_eval(evals, eval_qa_pair, grade_prompt):
     text = ""
     for eval in evals:
-        docs = eval.retriever.get_relevant_documents(eval_qa_pair["query"])
+        query = eval.query_transformer.transform(eval_qa_pair["query"])
+        docs = eval.retriever.get_relevant_documents(query)
         context = eval.document_processor.process(docs, eval_qa_pair["query"])
         text += f"# {str(eval)}\n"
         text += context + "\n\n"
@@ -154,56 +163,56 @@ def run_eval(evals, eval_qa_pair, grade_prompt):
 
 if __name__ == "__main__":
     init = True if len(sys.argv) > 1 and sys.argv[1] == "init" else False
-    eval_confs = [
-        EvalConfig(
-            model_type=ModelType.CHAT_OPENAI,
-            model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
-            embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
-            splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
-            splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
-            retriever_type=RetrieverType.CHROMA_VECTORSTORE,
-            retriever_args={"init": init, "persist_path": "chroma_index"},
-            document_processor_type=DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR,
-            document_processor_args={"limit": 4000}
-        ),
-        EvalConfig(
-            model_type=ModelType.CHAT_OPENAI,
-            model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
-            embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
-            splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
-            splitter_args={"chunk_size": 2000, "chunk_overlap": 100},
-            retriever_type=RetrieverType.CHROMA_VECTORSTORE,
-            retriever_args={"init": init, "persist_path": "chroma_index_with_compressor"},
-            document_processor_type=DocumentProcessorType.DOCUMENT_COMPRESSOR,
-            document_processor_args={"limit": 4000}
-        ),
-        EvalConfig(
-            model_type=ModelType.CHAT_OPENAI,
-            model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
-            embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
-            retriever_type=RetrieverType.LLAMA_DOC_SUMMARY,
-            retriever_args={"init": init, "persist_path": "doc_summary_index"},
-        ),
-        EvalConfig(
-            model_type=ModelType.CHAT_OPENAI,
-            model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
-            embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
-            splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
-            splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
-            retriever_type=RetrieverType.WEAVIATE_HYBRID_SEARCH,
-            retriever_args={
-                "init": init,
-                "persist_path": "hybrid_index",
-                "url": "http://localhost:8080",
-                "index_name": "LangChain_4434c0821b20463b878724ede4b28322",
-                "text_key": "text",
-            }
-        )
-    ]
+    eval_chroma = EvalConfig(
+        model_type=ModelType.CHAT_OPENAI,
+        model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+        embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
+        splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
+        splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
+        retriever_type=RetrieverType.CHROMA_VECTORSTORE,
+        retriever_args={"init": init, "persist_path": "chroma_index"},
+        document_processor_type=DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR,
+        document_processor_args={"limit": 4000},
+    )
+    eval_chroma_with_compressor = EvalConfig(
+        model_type=ModelType.CHAT_OPENAI,
+        model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+        embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
+        splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
+        splitter_args={"chunk_size": 2000, "chunk_overlap": 100},
+        retriever_type=RetrieverType.CHROMA_VECTORSTORE,
+        retriever_args={"init": init, "persist_path": "chroma_index_with_compressor"},
+        document_processor_type=DocumentProcessorType.DOCUMENT_COMPRESSOR,
+        document_processor_args={"limit": 4000},
+    )
+    eval_llama_doc_summary = EvalConfig(
+        model_type=ModelType.CHAT_OPENAI,
+        model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+        embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
+        retriever_type=RetrieverType.LLAMA_DOC_SUMMARY,
+        retriever_args={"init": init, "persist_path": "doc_summary_index"},
+    )
+    eval_hybrid_search = EvalConfig(
+        model_type=ModelType.CHAT_OPENAI,
+        model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+        embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
+        splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
+        splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
+        retriever_type=RetrieverType.WEAVIATE_HYBRID_SEARCH,
+        retriever_args={
+            "init": init,
+            "persist_path": "hybrid_index",
+            "url": "http://localhost:8080",
+            "index_name": "LangChain_4434c0821b20463b878724ede4b28322",
+            "text_key": "text",
+        },
+    )
+
+    eval_confs = [eval_chroma]
     docs = load_docs(
         "python.langchain.com/en/latest/modules/indexes/retrievers/examples",
         DocumentLoaderType.READ_THE_DOCS,
-        features="html.parser"
+        features="html.parser",
     )
     evals = [initialize_eval(e, docs) for e in eval_confs]
     qa_pairs = [{"query": "how to use hybrid retriever", "answer": "hybrid search"}]
