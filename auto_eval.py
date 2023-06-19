@@ -165,6 +165,7 @@ def build_qa_context(docs: List[Document], context_size: int) -> str:
 
 def run_eval(evals: List[EvalInstance], eval_qa_pair):
     eval_results = {}
+    retrieved_text = {}
     for eval in evals:
         query = eval.query_transformer.transform(eval_qa_pair["query"])
         docs = eval.retriever.get_relevant_documents(query)
@@ -173,7 +174,8 @@ def run_eval(evals: List[EvalInstance], eval_qa_pair):
             eval_qa_pair["query"], eval_qa_pair["answer"], text
         )
         eval_results[str(eval)] = eval_result
-    return eval_results
+        retrieved_text[str(eval)] = text
+    return eval_results, retrieved_text
 
 
 if __name__ == "__main__":
@@ -235,8 +237,23 @@ if __name__ == "__main__":
     evals = [initialize_eval(e, docs) for e in eval_confs]
     qa_pairs = [{"query": "how to use hybrid retriever", "answer": "hybrid search"}]
     retrieved_documents = []
+    results = []
     for qa_pair in qa_pairs:
-        eval_results = run_eval(evals, qa_pair)
+        eval_results, retrieved_text = run_eval(evals, qa_pair)
         print("QUERY: ", qa_pair["query"])
         for k, v in eval_results.items():
             print(colored(k, "blue"), colored(v, "green"))
+            results.append({
+                "query": qa_pair["query"],
+                "retriever": k,
+                "grade": v.grade,
+                "justification": v.justification,
+                "retrieved_text": retrieved_text[k]
+            })
+    with open("results.txt", "w") as f:
+        for result in results:
+            f.write(f"QUERY: {result['query']}\n")
+            f.write(f"RETRIEVER: {result['retriever']}\n")
+            f.write(f"GRADE: {result['grade']}\n")
+            f.write(f"JUSTIFICATION: {result['justification']}\n")
+            f.write(f"RETRIEVED TEXT: {result['retrieved_text']}\n\n")
