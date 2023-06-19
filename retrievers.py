@@ -43,9 +43,10 @@ class ChromaRetrieverBuilder(RetrieverBuilder):
     ) -> BaseRetriever:
         if (
             not kwargs["init"]
-            and "persiste_path" in kwargs
-            and os.path.exists(kwargs["persiste_path"])
+            and "persist_path" in kwargs
+            and os.path.exists(kwargs["persist_path"])
         ):
+            print("load documents from chroma index " + kwargs["persist_path"])
             return Chroma(
                 persist_directory=kwargs["persist_path"], embedding_function=embeddings
             ).as_retriever(**kwargs)

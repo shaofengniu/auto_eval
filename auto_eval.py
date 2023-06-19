@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 import json
 from termcolor import colored
@@ -7,6 +7,7 @@ from langchain.schema import Document, BaseRetriever
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.evaluation.qa import QAEvalChain
+from langchain.chains.llm import LLMChain
 from retrievers import RetrieverType, initialize_retriever
 from document_processors import (
     DocumentProcessorType,
@@ -15,7 +16,11 @@ from document_processors import (
 )
 from splitters import SplitterType, initialize_splitter
 from models import ModelType, EmbeddingType, initialize_model, initialize_embedding
-from query_transformers import QueryTransformerType, QueryTransformer, initialize_query_transformer
+from query_transformers import (
+    QueryTransformerType,
+    QueryTransformer,
+    initialize_query_transformer,
+)
 from enum import Enum
 import sys
 
@@ -100,19 +105,21 @@ def load_docs(path: str, loader_type: DocumentLoaderType, **kwargs) -> List[Docu
 template = """ 
 Given the question: \n
 {query}
-Here are some documents retrieved by different retrievers in response to the question: \n
-# <retriever_name>
-<document_content>
 
-# <retriever_name>
-<document_content>
-
-{result}
 And here is the answer to the question: \n 
 {answer}
+
+Here are some documents retrieved in response to the question: \n
+{text}
+
 Criteria: 
   relevance: Are the retrieved documents relevant to the question?"
 
+{format_instructions}
+"""
+
+
+t = """
 Your response should be as follows:
 # <retriever_name>
 GRADE: (1 to 10, depending if the retrieved documents meet the criterion)
@@ -123,42 +130,50 @@ GRADE: ...
 JUSTIFICATION:...
 """
 
+
+from langchain.output_parsers import PydanticOutputParser
+
+
+class EvalResult(BaseModel):
+    grade: int = Field(
+        description="1 to 10, depending if the retrieved documents meet the criterion"
+    )
+    justification: str = Field(
+        description="Write out in a step by step manner your reasoning about the criterion to be sure that your conclusion is correct. Use one or two sentences maximum. Keep the answer as concise as possible."
+    )
+
+
+parser = PydanticOutputParser(pydantic_object=EvalResult)
 GRADE_DOCS_PROMPT = PromptTemplate(
-    input_variables=["query", "answer", "result"], template=template
+    input_variables=["query", "answer", "text"],
+    template=template,
+    output_parser=parser,
+    partial_variables={"format_instructions": parser.get_format_instructions()},
 )
 
 
-def grade_model_retrieval(examples, predictions, prompt):
-    eval_chain = QAEvalChain.from_llm(
-        llm=ChatOpenAI(model_name="gpt-3.5-turbo-16k", temperature=0), prompt=prompt
-    )
-    outputs = eval_chain.evaluate(examples, predictions)
-    return outputs
+def eval_model_retrieval(query: str, answer: str, text: str) -> EvalResult:
+    llm = ChatOpenAI(model_name="gpt-3.5-turbo-0613", temperature=0)
+    eval_chain = LLMChain(llm=llm, prompt=GRADE_DOCS_PROMPT)
+    output = eval_chain.predict_and_parse(query=query, answer=answer, text=text)
+    return output
 
 
 def build_qa_context(docs: List[Document], context_size: int) -> str:
     return "\n".join([doc.page_content for doc in docs])[:context_size]
 
 
-def run_eval(evals, eval_qa_pair, grade_prompt):
-    text = ""
+def run_eval(evals: List[EvalInstance], eval_qa_pair):
+    eval_results = {}
     for eval in evals:
         query = eval.query_transformer.transform(eval_qa_pair["query"])
         docs = eval.retriever.get_relevant_documents(query)
-        context = eval.document_processor.process(docs, eval_qa_pair["query"])
-        text += f"# {str(eval)}\n"
-        text += context + "\n\n"
-    retrived_docs = [
-        {
-            "query": eval_qa_pair["query"],
-            "answer": eval_qa_pair["answer"],
-            "result": text,
-        }
-    ]
-    graded_retrieval = grade_model_retrieval(
-        [eval_qa_pair], retrived_docs, grade_prompt
-    )
-    return graded_retrieval[0], text
+        text = eval.document_processor.process(docs, eval_qa_pair["query"])
+        eval_result = eval_model_retrieval(
+            eval_qa_pair["query"], eval_qa_pair["answer"], text
+        )
+        eval_results[str(eval)] = eval_result
+    return eval_results
 
 
 if __name__ == "__main__":
@@ -208,7 +223,10 @@ if __name__ == "__main__":
         },
     )
 
-    eval_confs = [eval_chroma]
+    eval_confs = [eval_chroma,
+                  eval_chroma_with_compressor,
+                  eval_llama_doc_summary,
+                  eval_hybrid_search]
     docs = load_docs(
         "python.langchain.com/en/latest/modules/indexes/retrievers/examples",
         DocumentLoaderType.READ_THE_DOCS,
@@ -218,10 +236,7 @@ if __name__ == "__main__":
     qa_pairs = [{"query": "how to use hybrid retriever", "answer": "hybrid search"}]
     retrieved_documents = []
     for qa_pair in qa_pairs:
-        graded_retrieval, retrieved_text = run_eval(evals, qa_pair, GRADE_DOCS_PROMPT)
-        print(colored(graded_retrieval["text"], "green"))
-        retrieved_documents.append(
-            {"query": qa_pair["query"], "result": retrieved_text}
-        )
-    with open("retrieved_documents.json", "w") as f:
-        json.dump(retrieved_documents, f)
+        eval_results = run_eval(evals, qa_pair)
+        print("QUERY: ", qa_pair["query"])
+        for k, v in eval_results.items():
+            print(colored(k, "blue"), colored(v, "green"))
