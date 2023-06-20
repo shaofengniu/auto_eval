@@ -1,37 +1,52 @@
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from abc import ABC, abstractmethod
 from typing import List, Optional
 from langchain.schema import Document
 from langchain.chat_models import ChatOpenAI
 from langchain.retrievers.document_compressors import LLMChainExtractor
+from langchain.chains.combine_documents.base import format_document
+from langchain.prompts.prompt import PromptTemplate
+from langchain.prompts.base import BasePromptTemplate
 
 class DocumentProcessorType(str, Enum):
     CHARACTER_LIMIT_PROCESSOR = "character_limit_processor"
     DOCUMENT_COMPRESSOR = "document_compressor"
 
 
-class DocumentProcessor(BaseModel, ABC):
-    @abstractmethod
-    def process(self, documents: List[Document], query: str) -> str:
-        pass
+def _get_default_document_prompt() -> PromptTemplate:
+    return PromptTemplate(input_variables=["page_content"], template="{page_content}")
 
+
+class DocumentProcessor(BaseModel, ABC):
+    document_prompt: BasePromptTemplate = Field(
+        default_factory=_get_default_document_prompt
+    )
+
+    document_seperator: str = "\n\n"
+
+    def _combine_docs(self, docs: List[Document]) -> str:
+        doc_strings = [format_document(doc, self.document_prompt) for doc in docs]
+        return self.document_seperator.join(doc_strings)
+    
+    def process(self, docs: List[Document], **kwargs) -> str:
+        return self._combine_docs(docs)
+    
 
 class CharacterLimitProcessor(DocumentProcessor):
     limit: int = 2000
 
-    def process(self, documents: List[Document], query: str) -> List[Document]:
-        return "\n".join(doc.page_content for doc in documents)[: self.limit]
+    def process(self, docs: List[Document], query: str) -> str:
+        return self._combine_docs(docs)[:self.limit]
 
 
 class DocumentCompressor(DocumentProcessor):
-    limit: int = 2000
 
     def process(self, documents: List[Document], query: str) -> str:
         llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo-0613")
         compressor = LLMChainExtractor.from_llm(llm)
         compressed_docs = compressor.compress_documents(documents, query)
-        return "\n".join(doc.page_content for doc in compressed_docs)[: self.limit]
+        return self._combine_docs(compressed_docs)
 
 
 DOCUMENT_PROCESSOR_TYPE_TO_CLASS = {

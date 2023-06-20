@@ -1,13 +1,12 @@
 from pydantic import BaseModel, Field
 from typing import List
-import json
 from termcolor import colored
 from langchain.document_loaders import ReadTheDocsLoader
 from langchain.schema import Document, BaseRetriever
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import PromptTemplate
-from langchain.evaluation.qa import QAEvalChain
 from langchain.chains.llm import LLMChain
+from langchain.output_parsers import PydanticOutputParser
 from retrievers import RetrieverType, initialize_retriever
 from document_processors import (
     DocumentProcessorType,
@@ -21,6 +20,7 @@ from query_transformers import (
     QueryTransformer,
     initialize_query_transformer,
 )
+from retrieval_qa import initialize_qa_chain
 from enum import Enum
 import sys
 
@@ -42,6 +42,8 @@ class EvalConfig(BaseModel):
         DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR
     )
     document_processor_args: dict = {}
+    qa_model_type: ModelType = ModelType.CHAT_OPENAI
+    qa_model_args: dict = {}
 
 
 class EvalInstance(BaseModel):
@@ -49,6 +51,7 @@ class EvalInstance(BaseModel):
     retriever: BaseRetriever
     query_transformer: QueryTransformer
     document_processor: DocumentProcessor
+    qa: LLMChain
 
     class Config:
         arbitrary_types_allowed = True
@@ -76,12 +79,18 @@ def initialize_eval(eval_conf: EvalConfig, raw_docs: List[Document]):
     document_processor = initialize_document_processor(
         eval_conf.document_processor_type, **eval_conf.document_processor_args
     )
+    qa_llm = initialize_model(eval_conf.qa_model_type, **eval_conf.qa_model_args)
+    qa_chain = initialize_qa_chain(
+        qa_llm
+    )
+    
     print(eval_conf.dict(), len(raw_docs), len(docs))
     return EvalInstance(
         config=eval_conf,
         retriever=retriever,
         query_transformer=query_transformer,
         document_processor=document_processor,
+        qa=qa_chain
     )
 
 
@@ -119,21 +128,6 @@ Criteria:
 """
 
 
-t = """
-Your response should be as follows:
-# <retriever_name>
-GRADE: (1 to 10, depending if the retrieved documents meet the criterion)
-(line break)
-JUSTIFICATION: (Write out in a step by step manner your reasoning about the criterion to be sure that your conclusion is correct. Use one or two sentences maximum. Keep the answer as concise as possible.)
-# <retriever_name>
-GRADE: ...
-JUSTIFICATION:...
-"""
-
-
-from langchain.output_parsers import PydanticOutputParser
-
-
 class EvalResult(BaseModel):
     grade: int = Field(
         description="1 to 10, depending if the retrieved documents meet the criterion"
@@ -166,6 +160,7 @@ def build_qa_context(docs: List[Document], context_size: int) -> str:
 def run_eval(evals: List[EvalInstance], eval_qa_pair):
     eval_results = {}
     retrieved_text = {}
+    answers = {}
     for eval in evals:
         query = eval.query_transformer.transform(eval_qa_pair["query"])
         docs = eval.retriever.get_relevant_documents(query)
@@ -173,9 +168,14 @@ def run_eval(evals: List[EvalInstance], eval_qa_pair):
         eval_result = eval_model_retrieval(
             eval_qa_pair["query"], eval_qa_pair["answer"], text
         )
+        answer = eval.qa.run({"question": eval_qa_pair["query"],
+                              "context": text})
         eval_results[str(eval)] = eval_result
         retrieved_text[str(eval)] = text
-    return eval_results, retrieved_text
+        answers[str(eval)] = answer
+    return eval_results, retrieved_text, answers
+
+
 
 
 if __name__ == "__main__":
@@ -225,35 +225,35 @@ if __name__ == "__main__":
         },
     )
 
-    eval_confs = [eval_chroma,
-                  eval_chroma_with_compressor,
-                  eval_llama_doc_summary,
-                  eval_hybrid_search]
+    eval_confs = [eval_chroma, eval_hybrid_search]
     docs = load_docs(
         "python.langchain.com/en/latest/modules/indexes/retrievers/examples",
         DocumentLoaderType.READ_THE_DOCS,
         features="html.parser",
     )
     evals = [initialize_eval(e, docs) for e in eval_confs]
-    qa_pairs = [{"query": "how to use hybrid retriever", "answer": "hybrid search"}]
+    
+    qa_pairs = [{"query": "show me some example code to use hybrid retriever", "answer": "hybrid search"}]
     retrieved_documents = []
     results = []
     for qa_pair in qa_pairs:
-        eval_results, retrieved_text = run_eval(evals, qa_pair)
+        eval_results, retrieved_texts, answers = run_eval(evals, qa_pair)
         print("QUERY: ", qa_pair["query"])
         for k, v in eval_results.items():
             print(colored(k, "blue"), colored(v, "green"))
             results.append({
                 "query": qa_pair["query"],
+                "answer": answers[k],
                 "retriever": k,
                 "grade": v.grade,
                 "justification": v.justification,
-                "retrieved_text": retrieved_text[k]
+                "retrieved_text": retrieved_texts[k]
             })
     with open("results.txt", "w") as f:
         for result in results:
             f.write(f"QUERY: {result['query']}\n")
+            f.write(f"ANSWER: {result['answer']}\n")
             f.write(f"RETRIEVER: {result['retriever']}\n")
             f.write(f"GRADE: {result['grade']}\n")
             f.write(f"JUSTIFICATION: {result['justification']}\n")
-            f.write(f"RETRIEVED TEXT: {result['retrieved_text']}\n\n")
+            f.write(f"RETRIEVED TEXT:\n```{result['retrieved_text']}```\n\n")
