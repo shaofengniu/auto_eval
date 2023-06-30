@@ -15,7 +15,8 @@ class DocumentProcessorType(str, Enum):
 
 
 def _get_default_document_prompt() -> PromptTemplate:
-    return PromptTemplate(input_variables=["page_content"], template="{page_content}")
+    return PromptTemplate(input_variables=["page_content", "source", "title"],
+                          template="Source:{source}\nTitle:{title}\n{page_content}")
 
 
 class DocumentProcessor(BaseModel, ABC):
@@ -23,7 +24,7 @@ class DocumentProcessor(BaseModel, ABC):
         default_factory=_get_default_document_prompt
     )
 
-    document_seperator: str = "\n\n"
+    document_seperator: str = "\n" + "-" * 20 + "\n"
 
     def _combine_docs(self, docs: List[Document]) -> str:
         doc_strings = [format_document(doc, self.document_prompt) for doc in docs]
@@ -34,7 +35,7 @@ class DocumentProcessor(BaseModel, ABC):
     
 
 class CharacterLimitProcessor(DocumentProcessor):
-    limit: int = 2000
+    limit: int = 4000
 
     def process(self, docs: List[Document], query: str) -> str:
         return self._combine_docs(docs)[:self.limit]

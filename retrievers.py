@@ -17,6 +17,9 @@ from llama_index.indices.loading import load_index_from_storage
 from langchain.retrievers.weaviate_hybrid_search import WeaviateHybridSearchRetriever
 from langchain.vectorstores import Chroma, Weaviate
 from langchain.base_language import BaseLanguageModel
+from langchain.document_loaders.base import BaseLoader
+from langchain.embeddings.base import Embeddings
+from langchain.text_splitter import TextSplitter
 from enum import Enum
 import weaviate
 import os
@@ -25,7 +28,7 @@ import os
 class RetrieverBuilder(ABC):
     @staticmethod
     def from_documents(
-        llm, embeddings, docs: List[Document], **kwargs
+        llm: BaseLanguageModel, embeddings: Embeddings, loader: BaseLoader, splitter: TextSplitter, **kwargs
     ) -> BaseRetriever:
         pass
 
@@ -39,7 +42,7 @@ class RetrieverType(str, Enum):
 class ChromaRetrieverBuilder(RetrieverBuilder):
     @staticmethod
     def from_documents(
-        llm, embeddings, docs: List[Document], **kwargs
+        llm, embeddings, loader, splitter, **kwargs
     ) -> BaseRetriever:
         if (
             not kwargs["init"]
@@ -51,6 +54,7 @@ class ChromaRetrieverBuilder(RetrieverBuilder):
                 persist_directory=kwargs["persist_path"], embedding_function=embeddings
             ).as_retriever(**kwargs)
         else:
+            docs = splitter.split_documents(loader.load())
             return Chroma.from_documents(
                 docs, embeddings, persist_directory=kwargs["persist_path"]
             ).as_retriever(**kwargs)
@@ -59,9 +63,11 @@ class ChromaRetrieverBuilder(RetrieverBuilder):
 class WeaviateHybridSearchRetrieverBuilder(RetrieverBuilder):
     @staticmethod
     def from_documents(
-        llm, embeddings, docs: List[Document], **kwargs
+        llm, embeddings, loader, splitter, **kwargs
     ) -> BaseRetriever:
         if kwargs["init"]:
+            raw_docs = loader.load()
+            docs = splitter.split_documents(raw_docs)
             Weaviate.from_documents(
                 docs,
                 embeddings,
@@ -116,7 +122,7 @@ class LlamaDocSummaryRetrieverBuilder(RetrieverBuilder):
 
     @staticmethod
     def from_documents(
-        llm, embeddings, docs: List[Document], **kwargs
+        llm, embeddings, loader, splitter, **kwargs
     ) -> BaseRetriever:
         if (
             not kwargs["init"]
@@ -127,6 +133,8 @@ class LlamaDocSummaryRetrieverBuilder(RetrieverBuilder):
                 llm, embeddings, **kwargs
             )
         else:
+            raw_docs = loader.load()
+            docs = splitter.split_documents(raw_docs)
             return LlamaDocSummaryRetrieverBuilder._from_documents(
                 llm, embeddings, docs, **kwargs
             )
@@ -140,8 +148,8 @@ RETRIEVER_TYPE_TO_CLASS = {
 
 
 def initialize_retriever(
-    llm, embeddings, docs: List[Document], retriever_type: str, **kwargs
+    llm, embeddings, loader: BaseLoader, splitter: TextSplitter, retriever_type: str, **kwargs
 ) -> BaseRetriever:
     return RETRIEVER_TYPE_TO_CLASS[retriever_type].from_documents(
-        llm, embeddings, docs, **kwargs
+        llm, embeddings, loader, splitter, **kwargs
     )

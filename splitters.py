@@ -22,7 +22,7 @@ SPLITTER_TYPE_TO_CLASS = {
 }
 
 
-def initialize_splitter(splitter_type: SplitterType, kwargs):
+def initialize_splitter(splitter_type: SplitterType, kwargs) -> TextSplitter:
     if splitter_type in SPLITTER_TYPE_TO_CLASS:
         return SPLITTER_TYPE_TO_CLASS[splitter_type](**kwargs)
     else:
