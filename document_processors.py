@@ -12,6 +12,7 @@ from langchain.prompts.base import BasePromptTemplate
 class DocumentProcessorType(str, Enum):
     CHARACTER_LIMIT_PROCESSOR = "character_limit_processor"
     DOCUMENT_COMPRESSOR = "document_compressor"
+    LLM_RERANKER = "llm_reranker"
 
 
 def _get_default_document_prompt() -> PromptTemplate:
@@ -30,7 +31,7 @@ class DocumentProcessor(BaseModel, ABC):
         doc_strings = [format_document(doc, self.document_prompt) for doc in docs]
         return self.document_seperator.join(doc_strings)
     
-    def process(self, docs: List[Document], **kwargs) -> str:
+    def process(self, docs: List[Document], query: str) -> str:
         return self._combine_docs(docs)
     
 
@@ -50,9 +51,16 @@ class DocumentCompressor(DocumentProcessor):
         return self._combine_docs(compressed_docs)
 
 
+class LLMReranker(DocumentProcessor):
+
+    def process(self, docs: List[Document], query: str) -> str:
+        raise NotImplementedError
+
+
 DOCUMENT_PROCESSOR_TYPE_TO_CLASS = {
     DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR: CharacterLimitProcessor,
     DocumentProcessorType.DOCUMENT_COMPRESSOR: DocumentCompressor,
+    DocumentProcessorType.LLM_RERANKER: LLMReranker
 }
 
 
