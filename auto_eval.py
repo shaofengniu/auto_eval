@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from termcolor import colored
 from langchain.document_loaders import (
     ReadTheDocsLoader,
@@ -12,11 +12,12 @@ from langchain.prompts import PromptTemplate
 from langchain.chains.llm import LLMChain
 from langchain.output_parsers import PydanticOutputParser
 from langchain.document_loaders.base import BaseLoader
+from langchain.chains.combine_documents.base import format_document
 from retrievers import RetrieverType, initialize_retriever
-from document_processors import (
-    DocumentProcessorType,
-    DocumentProcessor,
-    initialize_document_processor,
+from post_processors import (
+    PostProcessorType,
+    PostProcessor,
+    initialize_post_processor,
 )
 from splitters import SplitterType, initialize_splitter
 from models import ModelType, EmbeddingType, initialize_model, initialize_embedding
@@ -39,14 +40,10 @@ class EvalConfig(BaseModel):
     splitter_args: dict = {}
     retriever_type: RetrieverType
     retriever_args: dict = {}
-    query_transformer_type: QueryTransformerType = (
-        QueryTransformerType.DEFAULT_QUERY_TRANSFORMER
-    )
+    query_transformer_type: Optional[QueryTransformerType] = None
     query_transformer_args: dict = {}
-    document_processor_type: DocumentProcessorType = (
-        DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR
-    )
-    document_processor_args: dict = {}
+    post_processor_type: Optional[PostProcessorType] = None
+    post_processor_args: dict = {}
     qa_model_type: ModelType = ModelType.CHAT_OPENAI
     qa_model_args: dict = {}
 
@@ -54,15 +51,15 @@ class EvalConfig(BaseModel):
 class EvalInstance(BaseModel):
     config: EvalConfig
     retriever: BaseRetriever
-    query_transformer: QueryTransformer
-    document_processor: DocumentProcessor
+    query_transformer: Optional[QueryTransformer] = None
+    post_processor: Optional[PostProcessor] = None
     qa: LLMChain
 
     class Config:
         arbitrary_types_allowed = True
 
     def __str__(self) -> str:
-        return f"{self.config.retriever_type}({self.config.query_transformer_type},{self.config.document_processor_type})"
+        return f"{self.config.retriever_type}({self.config.query_transformer_type},{self.config.post_processor_type})"
 
 
 def initialize_eval(eval_conf: EvalConfig, loader: BaseLoader) -> EvalInstance:
@@ -80,10 +77,12 @@ def initialize_eval(eval_conf: EvalConfig, loader: BaseLoader) -> EvalInstance:
     )
     query_transformer = initialize_query_transformer(
         llm, eval_conf.query_transformer_type, **eval_conf.query_transformer_args
-    )
-    document_processor = initialize_document_processor(
-        eval_conf.document_processor_type, **eval_conf.document_processor_args
-    )
+    ) if eval_conf.query_transformer_type else None
+
+    document_processor = initialize_post_processor(
+        eval_conf.post_processor_type, **eval_conf.post_processor_args
+    ) if eval_conf.post_processor_type else None
+
     qa_llm = initialize_model(eval_conf.qa_model_type, **eval_conf.qa_model_args)
     qa_chain = initialize_qa_chain(qa_llm)
 
@@ -92,7 +91,7 @@ def initialize_eval(eval_conf: EvalConfig, loader: BaseLoader) -> EvalInstance:
         config=eval_conf,
         retriever=retriever,
         query_transformer=query_transformer,
-        document_processor=document_processor,
+        post_processor=document_processor,
         qa=qa_chain,
     )
 
@@ -179,14 +178,26 @@ def build_qa_context(docs: List[Document], context_size: int) -> str:
     return sep.join([str(doc.metadata) + "\n" + doc.page_content for doc in docs])[:context_size]
 
 
+DEFAULT_DOCUMENT_PROMPT = PromptTemplate(input_variables=["page_content", "source", "title"],
+                          template="Source:{source}\nTitle:{title}\n{page_content}")
+DEFAULT_DOCUMENT_SEPERATOR = "\n" + "-" * 20 + "\n"
+
+def combine_docs(docs: List[Document]) -> str:
+    doc_strings = [format_document(doc, DEFAULT_DOCUMENT_PROMPT) for doc in docs]
+    return DEFAULT_DOCUMENT_SEPERATOR.join(doc_strings)
+
+
 def run_and_compare(evals: Tuple[EvalInstance, EvalInstance], question: str):
     queries = []
     retrieved_texts = []
     answers = []
     for eval in evals:
-        query = eval.query_transformer.transform(question)
-        docs = eval.retriever.get_relevant_documents(query)
-        text = eval.document_processor.process(docs, question)
+        if eval.query_transformer:
+            question = eval.query_transformer.transform(question)
+        docs = eval.retriever.get_relevant_documents(question)
+        if eval.post_processor:
+            docs = eval.post_processor.process(docs, question)
+        text = combine_docs(docs)
         answer = eval.qa.run({"question": question, "context": text})
         queries.append(query)
         retrieved_texts.append(text)
@@ -260,9 +271,20 @@ if __name__ == "__main__":
         splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
         splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
         retriever_type=RetrieverType.CHROMA_VECTORSTORE,
-        retriever_args={"init": init, "persist_path": "index/chroma_index", "search_kwargs": {"k": 10}},
-        document_processor_type=DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR,
-        document_processor_args={"limit": 4000},
+        retriever_args={"init": init, "persist_path": "index/chroma_index", "search_kwargs": {"k": 4}},
+        post_processor_args={"limit": 4000},
+        qa_model_type=ModelType.CHAT_OPENAI,
+        qa_model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+    )
+    eval_chroma_llm_reranker = EvalConfig(
+        model_type=ModelType.CHAT_OPENAI,
+        model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
+        embedding_type=EmbeddingType.OPENAI_EMBEDDINGS,
+        splitter_type=SplitterType.RECURSIVE_CHARACTER_TEXT_SPLITTER,
+        splitter_args={"chunk_size": 1000, "chunk_overlap": 100},
+        retriever_type=RetrieverType.CHROMA_VECTORSTORE,
+        retriever_args={"init": init, "persist_path": "index/chroma_index", "search_kwargs": {"k": 20}},
+        post_processor_type=PostProcessorType.LLM_RERANKER,
         qa_model_type=ModelType.CHAT_OPENAI,
         qa_model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
     )
@@ -273,8 +295,6 @@ if __name__ == "__main__":
         splitter_type=SplitterType.DEFAULT_TEXT_SPLITTER,
         retriever_type=RetrieverType.CHROMA_VECTORSTORE,
         retriever_args={"init": init, "persist_path": "index/chroma_index_non_split"},
-        document_processor_type=DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR,
-        document_processor_args={"limit": 4000},
         qa_model_type=ModelType.CHAT_OPENAI,
         qa_model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
     )
@@ -287,8 +307,6 @@ if __name__ == "__main__":
         retriever_type=RetrieverType.CHROMA_VECTORSTORE,
         retriever_args={"init": init, "persist_path": "index/chroma_index"},
         query_transformer_type=QueryTransformerType.KEYWORDS_QUERY_TRANSFORMER,
-        document_processor_type=DocumentProcessorType.CHARACTER_LIMIT_PROCESSOR,
-        document_processor_args={"limit": 4000},
         qa_model_type=ModelType.CHAT_OPENAI,
         qa_model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
     )
@@ -303,8 +321,7 @@ if __name__ == "__main__":
             "init": init,
             "persist_path": "index/chroma_index_with_compressor",
         },
-        document_processor_type=DocumentProcessorType.DOCUMENT_COMPRESSOR,
-        document_processor_args={"limit": 4000},
+        post_processor_type=PostProcessorType.DOCUMENT_COMPRESSOR,
         qa_model_type=ModelType.CHAT_OPENAI,
         qa_model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
     )
@@ -336,7 +353,7 @@ if __name__ == "__main__":
         qa_model_args={"model_name": "gpt-3.5-turbo-0613", "temperature": 0},
     )
 
-    eval_confs = [eval_chroma]
+    eval_confs = [eval_chroma_llm_reranker]
     loader = initialize_document_loader(
         "python.langchain.com/en/latest/",
         DocumentLoaderType.READ_THE_DOCS,
@@ -348,8 +365,20 @@ if __name__ == "__main__":
     else:
         while True:
             retriever = evals[0].retriever
-            query = input(colored("Enter question ===> ", "red"))
+            post_processor = evals[0].post_processor
+            query = input(colored("ENTER QUESTION ===> ", "red"))
             docs = retriever.get_relevant_documents(query)
+            print(colored("RETRIEVED DOCUMENTS ===>", "red"))
+            for doc in docs:
+                if "title" in doc.metadata:
+                    print(colored("* " + doc.metadata["title"], "green"))
+                if "source" in doc.metadata:
+                    print(colored(" - " + doc.metadata["source"], "white"))
+                if "id" in doc.metadata:
+                    print(colored("* " + doc.metadata["id"], "magenta"))
+            print(colored("AFTER POST PROCESSING ===>", "red"))
+            if post_processor:
+                docs = post_processor.process(docs, query)
             for doc in docs:
                 print(colored("#" * 80, "cyan"))
                 if "title" in doc.metadata:
